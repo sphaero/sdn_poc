@@ -126,21 +126,7 @@ class SwitchHandler(object):
 class SPFNetwork(object):
 
     def __init__(self, *args, **kwargs):
-        #self.add_switch("1")
-        #self.add_switch("2")
-        #self.add_switch("3")
-        #self.add_link("1","2")
-        #self.add_link("2", "3")
-        #self.add_link("3", "1")
-        #self.add_host("a")
-        #self.add_link("1","a")
-        #self.add_host("b")
-        #self.add_link("2","b")
-        #self.add_host("c")
-        #self.add_link("3","c")
-        #self.path_recalc()
-        #self.run()
-        pass
+        return
    
     def add_switch(self, id_):
         G.add_node(id_, tp="switch")
@@ -167,14 +153,18 @@ class SPFNetwork(object):
             G.remove_edge(_from, _to)
         except nx.NetworkXError as e:
             print(e)
-            return
+            try:
+                G.remove_edge(_to, _from)
+            except nx.NetworkXError as e:
+                print(e)
+                return
         else:
             self.redraw()
     
     def path_recalc(self):
         for switch in G.nodes(data=True):
             if switch[1]['tp'] == "switch":
-                print("-- NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
+                log.debug("-- NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
                 sw = switches[switch[0]]
                 for host in G.nodes(data=True):
                     if host[1]['tp'] == "host":
@@ -183,7 +173,6 @@ class SPFNetwork(object):
                         except nx.exception.NetworkXNoPath:
                             pass
                         else:
-                            #print(path)
                             if len(path) > 1:
                                 if isinstance(path[1], EthAddr):
                                     log.debug("FROM {0} TO {1}: {2} via port {3}".format(switch[0], host[0], path[1], sw.neighbourtable[path[1]]))
@@ -195,7 +184,7 @@ class SPFNetwork(object):
                                             log.debug("FROM {0} TO {1}: {2} via uplink port {3}".format(switch[0], host[0], path[1], k))
                                             sw.add_flow(host[0], k)
                                             break
-                print("--")
+                log.debug("--")
     
     def redraw(self):
         plt.clf()
@@ -205,9 +194,9 @@ class SPFNetwork(object):
         nx.draw_networkx_labels(G,pos)
         nx.draw_networkx_edges(G,pos)
         nx.draw_networkx_edge_labels(G, pos)
-        #nx.draw(G, node_color=colors)
         plt.axis('off')
         plt.draw()
+        plt.savefig('/tmp/net.png')
 
     def run(self):
         while True:
