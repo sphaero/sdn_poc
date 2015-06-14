@@ -1,4 +1,6 @@
 import networkx as nx
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 try:
     from pox.core import core
@@ -26,16 +28,30 @@ class Switch(object):
         self.dpid = dpid
         self.connection = connection
         self.n = n
-        self.flow_table = {}  # destination : outport
-        self.neighbourtable = {} # host mac: port
-        self.uplinkports = {} # port : dpid
+        self.flow_table = {}        # destination : outport
+        self.neighbourtable = {}    # host mac: port
+        self.uplinkports = {}       # port : dpid
     
     def add_host(self, mac, port):
-        self.n.add_host(str(packet.src)) # only unique is added
+        log.debug("{1}:add host {0}".format(mac,dpid_to_str(self.dpid)))
+        self.n.add_host(mac)        # only unique is added
         # check if we need create a link for this host
-        if str(packet_in.in_port) not in self.uplinkports.keys():
-            N.add_link(str(self.dpid), str(packet.src))
-            N.path_recalc()  # update all swicthes
+        if port not in self.uplinkports.keys():
+            self.n.add_link(self.dpid, mac, port)
+            if mac not in self.neighbourtable.keys():   # perhaps also check values?
+                self.neighbourtable[mac] = port         # we don't know this host yet 
+                self.n.path_recalc()                    # update all swicthes
+    
+    def add_uplink(self, port, sw_dpid, sw_port=None):
+        self.uplinkports[port] = sw_dpid
+        self.n.add_link(self.dpid, sw_dpid, "{0}:{1}".format(port, sw_port))
+
+    def rm_uplink(self, port, sw_dpid):
+        try:
+            self.uplinkports.pop(port)
+        except KeyError:
+            pass
+        self.n.rm_link(self.dpid, sw_dpid)
 
     def add_flow(self, dst, port):
         log.debug("{0}:add_flow: {1} to port: {2}".format(dpid_to_str(self.dpid), dst,port,self.connection))
@@ -64,9 +80,7 @@ class SwitchHandler(object):
     """
     def __init__ (self, sw):
         self.sw = sw
-        # This binds our PacketIn event listener
-        connection.addListeners(self)
-        #connection.addListeners("LinkEvent", start_switch
+        self.sw.connection.addListeners(self)       # This binds our PacketIn event listener
         core.openflow_discovery.addListenerByName("LinkEvent", self._handle_LinkEvent)
 
     def _handle_PacketIn (self, event):
@@ -79,59 +93,54 @@ class SwitchHandler(object):
             return
 
         packet_in = event.ofp # The actual ofp_packet_in message.
+        log.warning("{0}:handling packet {1}".format(dpid_to_str(self.sw.dpid), dpid_to_str(event.dpid)))
+        self.sw.add_host(packet.src, packet_in.in_port) # only unique is added
 
-        self.sw.add_host(packet.src) # only unique is added
-        
-        #self.sw.id_to_port[str(packet.src)] = packet_in.in_port
-        # create a flow for any packet matching this src to output
-        # to this port
-        #self._add_flow(packet.src, packet_in.in_port)
-        # update the other switches so they know about this target
-        #for sw in switches.values():
-        #    log.debug("update sw:{0}, {1}:{2}".format(sw.dpid, packet.src, self.dpid))
-        #    sw.update_mac_dst(packet.src, self.dpid)
-
-        #self.act_like_l3_switch(event)
-
-        # now let's see what we can do with this packet
-        if packet.dst not in self.mac_to_port:
-            # if we don't know the destination flood the packet, 
-            # this way we learn mac addresses as well
-            # better would be in case of IP to do an ARP request for the ipaddress
-            # however this works just as well, just less secure
-            log.debug("HELLUP we don't know dst: {0}".format(packet.dst))
-
-            #for mac in self.mac_to_port.keys():
-            if str(packet.dst) in G.nodes():
-                path = nx.dijkstra_path(G, str(self.dpid), str(packet.dst))
-                if len(path) == 2:
-                    self._add_flow(packet.dst, self.mac_to_port[packet.dst])
-                else:
-                    self._add_flow(packet.dst, self.uplinks[path[1]])
-            #self.resend_packet(packet_in, of.OFPP_ALL)
+    def _handle_LinkEvent(self, event):
+        # it is impossible we don't know the switches yet!
+        l = event.link
+        assert(l.dpid1 in switches)
+        assert(l.dpid2 in switches)
+        # only handle this event if we are involved
+        if not self.sw.dpid in (l.dpid1, l.dpid2):
             return
+
+        if event.added:
+            # determine the uplink port and save it
+            if l.dpid1 == self.sw.dpid:
+                self.sw.add_uplink(l.port1, l.dpid2, l.port2)
+            else:
+                self.sw.add_uplink(l.port2, l.dpid1, l.port1)
         else:
-            self._add_flow(packet.dst, self.mac_to_port[packet.dst])
+            # Link down event
+            if l.dpid1 == self.sw.dpid:
+                self.sw.rm_uplink(l.port1, l.dpid2)
+            else:
+                self.sw.rm_uplink(l.port2, l.dpid1)
+                
+        # recalculate flows
+        self.sw.n.path_recalc()
+        log.debug("Link {0} event on {1}: link {2}:{3} to {4}:{5}".format(event.added, self.sw.dpid, l.dpid1, l.port1, l.dpid2, l.port2))
 
 
 class SPFNetwork(object):
 
     def __init__(self, *args, **kwargs):
-        self.add_switch("1")
-        self.add_switch("2")
-        self.add_switch("3")
-        self.add_link("1","2")
-        self.add_link("2", "3")
-        self.add_link("3", "1")
-        self.add_host("a")
-        self.add_link("1","a")
-        self.add_host("b")
-        self.add_link("2","b")
-        self.add_host("c")
-        self.add_link("3","c")
-        self.path_recalc()
-        plt.ion()
+        #self.add_switch("1")
+        #self.add_switch("2")
+        #self.add_switch("3")
+        #self.add_link("1","2")
+        #self.add_link("2", "3")
+        #self.add_link("3", "1")
+        #self.add_host("a")
+        #self.add_link("1","a")
+        #self.add_host("b")
+        #self.add_link("2","b")
+        #self.add_host("c")
+        #self.add_link("3","c")
+        #self.path_recalc()
         #self.run()
+        pass
    
     def add_switch(self, id_):
         G.add_node(id_, tp="switch")
@@ -141,8 +150,8 @@ class SPFNetwork(object):
         G.add_node(id_, tp="host")
         self.redraw()
 
-    def add_link(self, _from, _to, weight=1):
-        G.add_edge(_from, _to, weight=weight)
+    def add_link(self, _from, _to, ports):
+        G.add_edge(_from, _to, ports=ports)
         self.redraw()
 
     def rm_switch(self, id_):
@@ -153,28 +162,51 @@ class SPFNetwork(object):
         G.remove_node(id_)
         self.redraw()
 
-    def rm_link(self, _from, _to, weight=1):
-        G.remove_edge(_from, _to)
-        self.redraw()
+    def rm_link(self, _from, _to):
+        try:
+            G.remove_edge(_from, _to)
+        except nx.NetworkXError as e:
+            print(e)
+            return
+        else:
+            self.redraw()
     
     def path_recalc(self):
         for switch in G.nodes(data=True):
             if switch[1]['tp'] == "switch":
-                print("NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
-                for host in G.nodes():
-                    try:
-                        path = nx.shortest_path(G, switch[0], host)
-                    except nx.exception.NetworkXNoPath:
-                        pass
-                    else:
-                        print(path)
-                        if len(path) > 1:
-                            print("FROM {0} TO {1}: {2}".format(switch[0], host, path[1]))
+                print("-- NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
+                sw = switches[switch[0]]
+                for host in G.nodes(data=True):
+                    if host[1]['tp'] == "host":
+                        try:
+                            path = nx.shortest_path(G, switch[0], host[0])
+                        except nx.exception.NetworkXNoPath:
+                            pass
+                        else:
+                            #print(path)
+                            if len(path) > 1:
+                                if isinstance(path[1], EthAddr):
+                                    log.debug("FROM {0} TO {1}: {2} via port {3}".format(switch[0], host[0], path[1], sw.neighbourtable[path[1]]))
+                                    sw.add_flow(host[0], sw.neighbourtable[path[1]])
+                                else:
+                                    # find the right/first uplink port to switch
+                                    for k,v in sw.uplinkports.items():
+                                        if v == path[1]:
+                                            log.debug("FROM {0} TO {1}: {2} via uplink port {3}".format(switch[0], host[0], path[1], k))
+                                            sw.add_flow(host[0], k)
+                                            break
+                print("--")
     
     def redraw(self):
         plt.clf()
         colors = [colormap.get(node[1]['tp']) for node in G.nodes(data=True)]
-        nx.draw(G, node_color=colors)
+        pos=nx.spring_layout(G)
+        nx.draw_networkx_nodes(G,pos, node_color=colors)
+        nx.draw_networkx_labels(G,pos)
+        nx.draw_networkx_edges(G,pos)
+        nx.draw_networkx_edge_labels(G, pos)
+        #nx.draw(G, node_color=colors)
+        plt.axis('off')
         plt.draw()
 
     def run(self):
@@ -207,13 +239,15 @@ def launch ():
             N.add_switch(event.dpid)
             switches[event.dpid] = sw
         else:
-            sw.connect(event.connection)
+            log.warning("We already know switch {0}, setting new connection object".format(dpid_to_str(event.dpid)))
+            sw.connection = event.connection
 
-        PoxSPF(event.connection, sw)
+        SwitchHandler(sw)
+
+    plt.ion()
     N = SPFNetwork()
     core.openflow.addListenerByName("ConnectionUp", start_switch)
-    #core.openflow.addListenerByName("LinkEvent", start_switch)
 
 
-#`if __name__ == "__main__":
+#if __name__ == "__main__":
     #N = SPFNetwork()
