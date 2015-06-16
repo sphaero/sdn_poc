@@ -18,6 +18,8 @@ else:
     import logging
     log = logging.getLogger(__name__)
 
+from pyre_loop import PyreEvent
+
 colormap = { 'host': 'red', 'switch': 'green'}
 G = nx.Graph()
 switches = {}
@@ -82,6 +84,7 @@ class SwitchHandler(object):
         self.sw = sw
         self.sw.connection.addListeners(self)       # This binds our PacketIn event listener
         core.openflow_discovery.addListenerByName("LinkEvent", self._handle_LinkEvent)
+        core.pyre.addListenerByName("PyreEvent", self._handlePyreEvent)
 
     def _handle_PacketIn (self, event):
         """
@@ -121,6 +124,9 @@ class SwitchHandler(object):
         # recalculate flows
         self.sw.n.path_recalc()
         log.debug("Link {0} event on {1}: link {2}:{3} to {4}:{5}".format(event.added, self.sw.dpid, l.dpid1, l.port1, l.dpid2, l.port2))
+
+    def _handlePyreEvent(self, *args, **kwargs):
+        print("PYREEVENT", args, kwargs)
 
 
 class SPFNetwork(object):
