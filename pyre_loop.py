@@ -39,8 +39,8 @@ class PyreEventLoop(EventMixin, Task):
     def __init__(self):
         Task.__init__(self)  # call our superconstructor
         
-        self.n = Pyre("POX")
-        self.n.join("CHAT")
+        self.n = Pyre("POXCTRL")
+        self.n.join("POX")
         
         self.sockets = self.get_sockets() # ... the sockets to listen to events on
 
@@ -68,6 +68,9 @@ class PyreEventLoop(EventMixin, Task):
             t = cmds.pop(0)
             self.raiseEvent(PyreEvent,t, cmds)
 #        return EventHalt
+
+    def shout(self, group, msg):
+        self.n.shout(group, msg)
 
     def run(self):
         """

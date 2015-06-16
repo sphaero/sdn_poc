@@ -19,10 +19,20 @@ else:
     log = logging.getLogger(__name__)
 
 from pyre_loop import PyreEvent
+import json
+import pickle
 
-colormap = { 'host': 'red', 'switch': 'green'}
+colormap = { 'host': 'red', 'switch': 'green', 'remoteswitch': 'blue'}
 G = nx.Graph()
 switches = {}
+
+#
+# Start two controllers like this:
+# PYTHONPATH="../../:/home/people/arnaud/src/pyre/" ./pox.py log.level --DEBUG sdn_poc.pyre_loop sdn_poc.spf_network --id=0 openflow.discovery
+# PYTHONPATH="../../:/home/people/arnaud/src/pyre/" ./pox.py openflow.of_01 --port=6634 log.level --DEBUG sdn_poc.pyre_loop sdn_poc.spf_network --id=1 openflow.discovery
+#
+# distopo.py is an example script to setup mininet for this
+#
 
 class Switch(object):
     
@@ -42,7 +52,7 @@ class Switch(object):
             self.n.add_link(self.dpid, mac, port)
             if mac not in self.neighbourtable.keys():   # perhaps also check values?
                 self.neighbourtable[mac] = port         # we don't know this host yet 
-                self.n.path_recalc()                    # update all swicthes
+                #self.n.path_recalc()                    # update all swicthes
     
     def add_uplink(self, port, sw_dpid, sw_port=None):
         self.uplinkports[port] = sw_dpid
@@ -84,7 +94,6 @@ class SwitchHandler(object):
         self.sw = sw
         self.sw.connection.addListeners(self)       # This binds our PacketIn event listener
         core.openflow_discovery.addListenerByName("LinkEvent", self._handle_LinkEvent)
-        core.pyre.addListenerByName("PyreEvent", self._handlePyreEvent)
 
     def _handle_PacketIn (self, event):
         """
@@ -96,16 +105,18 @@ class SwitchHandler(object):
             return
 
         packet_in = event.ofp # The actual ofp_packet_in message.
-        log.warning("{0}:handling packet {1}".format(dpid_to_str(self.sw.dpid), dpid_to_str(event.dpid)))
         self.sw.add_host(packet.src, packet_in.in_port) # only unique is added
+        log.warning("{0}:handling packet src:{1} dst:{2}".format(dpid_to_str(self.sw.dpid), packet.src, packet.dst))
+        self.sw.n.handle_HostEvent(event)
 
     def _handle_LinkEvent(self, event):
-        # it is impossible we don't know the switches yet!
         l = event.link
-        assert(l.dpid1 in switches)
-        assert(l.dpid2 in switches)
         # only handle this event if we are involved
         if not self.sw.dpid in (l.dpid1, l.dpid2):
+            return
+
+        # only handle the event if we are the controller for either of them
+        if not (self.sw.n.ctrl_by_me(l.dpid1) or self.sw.n.ctrl_by_me(l.dpid2)):
             return
 
         if event.added:
@@ -121,18 +132,16 @@ class SwitchHandler(object):
             else:
                 self.sw.rm_uplink(l.port2, l.dpid1)
                 
-        # recalculate flows
-        self.sw.n.path_recalc()
+        # let the controller handle it now
+        self.sw.n.handle_LinkEvent(event)
         log.debug("Link {0} event on {1}: link {2}:{3} to {4}:{5}".format(event.added, self.sw.dpid, l.dpid1, l.port1, l.dpid2, l.port2))
-
-    def _handlePyreEvent(self, *args, **kwargs):
-        print("PYREEVENT", args, kwargs)
 
 
 class SPFNetwork(object):
 
     def __init__(self, *args, **kwargs):
-        return
+        self.controllerID = 0
+        self.controllers = {}
    
     def add_switch(self, id_):
         G.add_node(id_, tp="switch")
@@ -169,32 +178,34 @@ class SPFNetwork(object):
     
     def path_recalc(self):
         for switch in G.nodes(data=True):
-            if switch[1]['tp'] == "switch":
-                log.debug("-- NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
-                sw = switches[switch[0]]
-                for host in G.nodes(data=True):
-                    if host[1]['tp'] == "host":
-                        try:
-                            path = nx.shortest_path(G, switch[0], host[0])
-                        except nx.exception.NetworkXNoPath:
-                            pass
-                        else:
-                            if len(path) > 1:
-                                if isinstance(path[1], EthAddr):
-                                    log.debug("FROM {0} TO {1}: {2} via port {3}".format(switch[0], host[0], path[1], sw.neighbourtable[path[1]]))
-                                    sw.add_flow(host[0], sw.neighbourtable[path[1]])
-                                else:
-                                    # find the right/first uplink port to switch
-                                    for k,v in sw.uplinkports.items():
-                                        if v == path[1]:
-                                            log.debug("FROM {0} TO {1}: {2} via uplink port {3}".format(switch[0], host[0], path[1], k))
-                                            sw.add_flow(host[0], k)
-                                            break
+            if switch[1].get('tp') == "switch":
+                if switches.get(switch[0]) and self.ctrl_by_me(switches[switch[0]].dpid): # only control the switches we need to control
+                    log.debug("-- NEXT HOPS FOR SWITCH: {0}".format(switch[0]))
+                    sw = switches[switch[0]]
+                    for host in G.nodes(data=True):
+                        if host[1].get('tp') == "host":
+                            try:
+                                path = nx.shortest_path(G, switch[0], host[0])
+                            except nx.exception.NetworkXNoPath:
+                                pass
+                            else:
+                                if len(path) > 1:
+                                    if isinstance(path[1], EthAddr):
+                                        log.debug("FROM {0} TO {1}: {2} via port {3}".format(switch[0], host[0], path[1], sw.neighbourtable[path[1]]))
+                                        sw.add_flow(host[0], sw.neighbourtable[path[1]])
+                                    else:
+                                        # find the right/first uplink port to switch
+                                        for k,v in sw.uplinkports.items():
+                                            if v == path[1]:
+                                                log.debug("FROM {0} TO {1}: {2} via uplink port {3}".format(switch[0], host[0], path[1], k))
+                                                sw.add_flow(host[0], k)
+                                                break
                 log.debug("--")
     
     def redraw(self):
         plt.clf()
-        colors = [colormap.get(node[1]['tp']) for node in G.nodes(data=True)]
+        #print(G.nodes(data=True))
+        colors = [colormap.get(node[1].get('tp', 'remoteswitch')) for node in G.nodes(data=True)]
         pos=nx.spring_layout(G)
         nx.draw_networkx_nodes(G,pos, node_color=colors)
         nx.draw_networkx_labels(G,pos)
@@ -203,6 +214,9 @@ class SPFNetwork(object):
         plt.axis('off')
         plt.draw()
         plt.savefig('/tmp/net.png')
+
+    def ctrl_by_me(self, dpid):
+        return dpid % (len(self.controllers)+1) == self.controllerID
 
     def run(self):
         while True:
@@ -221,26 +235,93 @@ class SPFNetwork(object):
             except (KeyboardInterrupt, SystemExit):
                 break
 
-def launch ():
+class PyreNetworkController(SPFNetwork):
+    
+    def __init__(self, ID, *args, **kwargs):
+        super(PyreNetworkController, self).__init__()
+        self.controllerID = ID
+        core.pyre.addListenerByName("PyreEvent", self.handle_PyreEvent)
+    
+    def handle_HostEvent(self, event):
+        """
+        Handle host changes
+        """
+        packet = event.parsed # This is the parsed packet data.
+        if not packet.parsed:
+            log.warning("Ignoring incomplete packet")
+            return
+
+        packet_in = event.ofp
+        ev = ("H", event.dpid, packet.src, packet_in.in_port)
+        core.pyre.shout("POX", pickle.dumps(ev, pickle.HIGHEST_PROTOCOL))
+        self.path_recalc()
+        
+    def handle_LinkEvent(self, event):
+        """
+        Handle link event from switch we control
+        """
+        # recalculate flows
+        ev = ( "S", event.added, event.link ) # LinkEvents are not serializable :(
+        core.pyre.shout("POX", pickle.dumps(ev, pickle.HIGHEST_PROTOCOL))
+        self.path_recalc()
+    
+    def handle_PyreEvent(self, ev):
+        """
+        Handle link event from switch we don't control
+        """
+        print("PYREEVENT", ev)
+        if ev.type == "SHOUT":
+            peer = ev.msg.pop(0)
+            name = ev.msg.pop(0)
+            grp = ev.msg.pop(0)
+            event = pickle.loads(ev.msg.pop(0))
+            #print(event)
+            if event[0] == 'S':
+                l = event[2]        
+                if event[1]:
+                    self.add_link(l.dpid1, l.dpid2, "{0}:{1}".format(l.port1, l.port2))
+                else:
+                    self.rm_link(l.dpid1, l.dpid2)
+            elif event[0] == 'H':
+                dpid = event[1]
+                mac = event[2]
+                port = event[3]
+                self.add_host(mac)
+                self.add_link(dpid, mac, port)
+                    
+            # recalculate flows
+            self.path_recalc()
+            return
+        elif ev.type == "JOIN":
+            ctrl_id = ev.msg.pop(0)
+            ctrl_name = ev.msg.pop(0)
+            grp_name = ev.msg.pop(0)
+            if grp_name == "POX":
+                self.controllers.update({ctrl_id : ctrl_name})
+                # from now on switches are controlled using the updated list
+
+
+def launch (id=0):
     """
     Starts the component
     """
     def start_switch (event):
         log.debug("Controlling {0}:{1}".format(event.connection,event.dpid))
-        sw = switches.get(event.dpid)
-        if sw is None:
-            # New switch
-            sw = Switch(event.dpid, event.connection, N)
-            N.add_switch(event.dpid)
-            switches[event.dpid] = sw
-        else:
-            log.warning("We already know switch {0}, setting new connection object".format(dpid_to_str(event.dpid)))
-            sw.connection = event.connection
+        if N.ctrl_by_me(event.dpid):
+            sw = switches.get(event.dpid)
+            if sw is None:
+                # New switch
+                sw = Switch(event.dpid, event.connection, N)
+                N.add_switch(event.dpid)
+                switches[event.dpid] = sw
+            else:
+                log.warning("We already know switch {0}, setting new connection object".format(dpid_to_str(event.dpid)))
+                sw.connection = event.connection
 
-        SwitchHandler(sw)
+            SwitchHandler(sw)
 
     plt.ion()
-    N = SPFNetwork()
+    N = PyreNetworkController(int(id))
     core.openflow.addListenerByName("ConnectionUp", start_switch)
 
 
