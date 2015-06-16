@@ -19,7 +19,6 @@ else:
     log = logging.getLogger(__name__)
 
 from pyre_loop import PyreEvent
-import json
 import pickle
 
 colormap = { 'host': 'red', 'switch': 'green', 'remoteswitch': 'blue'}
@@ -204,7 +203,6 @@ class SPFNetwork(object):
     
     def redraw(self):
         plt.clf()
-        #print(G.nodes(data=True))
         colors = [colormap.get(node[1].get('tp', 'remoteswitch')) for node in G.nodes(data=True)]
         pos=nx.spring_layout(G)
         nx.draw_networkx_nodes(G,pos, node_color=colors)
@@ -213,7 +211,7 @@ class SPFNetwork(object):
         nx.draw_networkx_edge_labels(G, pos)
         plt.axis('off')
         plt.draw()
-        plt.savefig('/tmp/net.png')
+        plt.savefig('/tmp/net{0}.png'.format(self.controllerID))
 
     def ctrl_by_me(self, dpid):
         return dpid % (len(self.controllers)+1) == self.controllerID
